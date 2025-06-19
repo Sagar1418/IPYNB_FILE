@@ -4,6 +4,7 @@ from pyvis.network import Network
 import tempfile
 import networkx as nx
 import random
+import re
 
 st.set_page_config(page_title="HT Network Feeder-wise Visualization", layout="wide")
 st.title("HT Network: Feeder-wise Visualization & Edge Explanation")
@@ -18,11 +19,25 @@ for col in df.columns:
     df[col] = df[col].fillna("-")
 df['FEEDERID'] = df['FEEDERID'].astype(str)
 
-def _extract_cable_type(feederid):
-    if feederid is None or pd.isnull(feederid) or feederid == 'nan':
-        return "UNKNOWN"
-    p = str(feederid).split("_")
-    return p[1].upper() if len(p) >= 3 else "UNKNOWN"
+# ----- VOLTAGE LEVEL LOGIC -----
+def feeder_voltage(feederid):
+    if pd.isnull(feederid) or feederid in ["-", "NULL", "nan"]:
+        return "Others"
+    feederid_upper = str(feederid).upper()
+    if "11KV" in feederid_upper:
+        return "11kV"
+    elif "22KV" in feederid_upper:
+        return "22kV"
+    elif "33KV" in feederid_upper:
+        return "33kV"
+    else:
+        match = re.search(r'(\d{2})KV', feederid_upper)
+        if match:
+            return f"{match.group(1)}kV"
+        else:
+            return "Others"
+
+df["FEEDER_VOLTAGE"] = df["FEEDERID"].apply(feeder_voltage)
 
 def _extract_feeder_token(feederid):
     if feederid is None or pd.isnull(feederid) or feederid == 'nan':
@@ -30,35 +45,32 @@ def _extract_feeder_token(feederid):
     p = str(feederid).split("_")
     return p[2] if len(p) >= 3 else "NULL"
 
-df["CABLE_TYPE"] = df["FEEDERID"].apply(_extract_cable_type)
 df["FEEDER_ID"] = df["FEEDERID"].apply(_extract_feeder_token)
 
-# ---- MULTI-SELECT for CABLE_TYPE ----
-cable_types = sorted(df["CABLE_TYPE"].dropna().unique())
-selected_cable_types = st.multiselect("Select Network Type(s):", cable_types, default=[cable_types[0]])
+# ---- VOLTAGE MULTI-SELECT ----
+voltage_levels = ["11kV", "22kV", "33kV", "Others"]
+selected_voltages = st.multiselect(
+    "Select Voltage Level(s):", voltage_levels, default=voltage_levels[:1]
+)
 
-# ---- FEEDER_ID multi-select for selected cable types ----
-# ---- FEEDER_ID multi-select for selected cable types ----
-feeders_list = sorted(df[df["CABLE_TYPE"].isin(selected_cable_types)]["FEEDER_ID"].fillna("NULL").unique().tolist())
+# ---- FEEDER_ID multi-select for selected voltage ----
+filtered_by_voltage = df[df["FEEDER_VOLTAGE"].isin(selected_voltages)]
+feeders_list = sorted(filtered_by_voltage["FEEDER_ID"].fillna("NULL").unique().tolist())
 if "NULL" not in feeders_list:
     feeders_list.append("NULL")
-
-# ADD "All" as first option!
 feeder_options = ["All"] + feeders_list
 selected_feeders = st.multiselect("Select FEEDER ID(s):", feeder_options, default=["All"])
 
-# Adjust filtering logic: If "All" in selection, use all feeders for selected cable types
+# ---- FINAL FILTER for Data ----
 if "All" in selected_feeders:
-    view_df = df[df["CABLE_TYPE"].isin(selected_cable_types)].copy()
+    view_df = filtered_by_voltage.copy()
 else:
-    view_df = df[
-        (df["CABLE_TYPE"].isin(selected_cable_types)) &
-        (df["FEEDER_ID"].isin(selected_feeders))
-    ].copy()
+    view_df = filtered_by_voltage[filtered_by_voltage["FEEDER_ID"].isin(selected_feeders)].copy()
 
 view_df["SOURCE_SS"] = view_df["SOURCE_SS"].fillna("UNKNOWN").astype(str)
 view_df["DESTINATION_SS"] = view_df["DESTINATION_SS"].fillna("UNKNOWN").astype(str)
 
+# ---- EDGE LIMIT ----
 MAX_EDGES = 500
 MAX_EDGES = st.number_input(
     "Maximum number of edges to show (for performance):",
@@ -69,42 +81,16 @@ if len(view_df) > MAX_EDGES:
     st.warning(f"Network has {len(view_df)} edges! Only first {MAX_EDGES} shown for clarity.")
     view_df = view_df.head(MAX_EDGES)
 
+# ---- EDGE TYPE FILTER ----
 pair_counts = view_df.groupby(["SOURCE_SS", "DESTINATION_SS"]).size()
 multi_edge_pairs = pair_counts[pair_counts > 1].index.tolist()
+single_edge_pairs = pair_counts[pair_counts == 1].index.tolist()
 
-def random_color():
-    return "#"+''.join(random.choices('0123456789ABCDEF', k=6))
-
-edges = []
-color_map = {}
-for idx, row in view_df.iterrows():
-    src = row["SOURCE_SS"]
-    dst = row["DESTINATION_SS"]
-    is_multi = (src, dst) in multi_edge_pairs
-    color = ""
-    # For unique color even if row content same (so table, edge always match)
-    row_tuple = tuple(row)
-    if is_multi:
-        color = color_map.get(row_tuple)
-        if not color:
-            color = random_color()
-            while color in color_map.values():
-                color = random_color()
-            color_map[row_tuple] = color
-    edge_dict = row.to_dict()
-    edge_dict.update({"src": src, "dst": dst, "is_multi": is_multi, "color": color})
-    edges.append(edge_dict)
-# ---- EDGE TYPE FILTER ----
 edge_type = st.selectbox(
     "Select which type of edges to show:",
     ["All", "Self-loop only", "Multiple edges only", "Single edges only"],
     index=0
 )
-
-# Identify all self-loops, multi, single
-pair_counts = view_df.groupby(["SOURCE_SS", "DESTINATION_SS"]).size()
-multi_edge_pairs = pair_counts[pair_counts > 1].index.tolist()
-single_edge_pairs = pair_counts[pair_counts == 1].index.tolist()
 
 def edge_filter(row):
     src = row["SOURCE_SS"]
@@ -119,14 +105,58 @@ def edge_filter(row):
         return (src, dst) in single_edge_pairs
     return True
 
-# Apply edge filter to the DataFrame
 view_df = view_df[view_df.apply(edge_filter, axis=1)].copy()
 
+# ---- Find highlighted nodes: SOURCE_SS where SOURCE_SWITCH_ID == selected FEEDER_ID ----
+highlighted_nodes = set()
+if "All" not in selected_feeders and "NULL" not in selected_feeders and "SOURCE_SWITCH_ID" in view_df.columns:
+    mask = view_df["SOURCE_SWITCH_ID"].isin(selected_feeders)
+    highlighted_nodes = set(view_df.loc[mask, "SOURCE_SS"].unique())
 
+# ---- BUILD EDGES ----
+def random_color():
+    return "#"+''.join(random.choices('0123456789ABCDEF', k=6))
+
+edges = []
+color_map = {}
+for idx, row in view_df.iterrows():
+    src = row["SOURCE_SS"]
+    dst = row["DESTINATION_SS"]
+    is_multi = (src, dst) in multi_edge_pairs
+    color = ""
+    row_tuple = tuple(row)
+    if is_multi:
+        color = color_map.get(row_tuple)
+        if not color:
+            color = random_color()
+            while color in color_map.values():
+                color = random_color()
+            color_map[row_tuple] = color
+    edge_dict = row.to_dict()
+    edge_dict.update({"src": src, "dst": dst, "is_multi": is_multi, "color": color})
+    edges.append(edge_dict)
+
+# ---- BUILD NETWORKX GRAPH (highlight only matching SOURCE_SS nodes) ----
+ss_to_feederid = dict(zip(view_df["SOURCE_SS"], view_df["FEEDER_ID"]))
 G = nx.MultiDiGraph()
 for e in edges:
-    G.add_node(e["src"])
-    G.add_node(e["dst"])
+    for node in [e["src"], e["dst"]]:
+        if node in highlighted_nodes:
+            G.add_node(
+                node,
+                color="#FF3333",
+                size=35,
+                borderWidth=4,
+                label=f"{node} (FEEDER)",
+                font={'color': '#111', 'size': 22, 'bold': True},
+                title=f"FEEDER_ID: {ss_to_feederid.get(node, '-')}"
+            )
+        else:
+            G.add_node(
+                node,
+                size=25,
+                title=f"FEEDER_ID: {ss_to_feederid.get(node, '-')}"
+            )
     edge_kwargs = dict(
         label="",
         title=" | ".join([f"{k}: {e[k]}" for k in ['MEASUREDLENGTH','COMMENTS'] if k in e])
@@ -177,7 +207,7 @@ with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as temp_file:
     st.components.v1.html(temp_file.read().decode(), height=850, scrolling=True)
 
 st.markdown("---")
-st.subheader(f"Explanation for Multiple Edges Only (Network Type(s): {', '.join(selected_cable_types)} | FEEDER(s): {', '.join(selected_feeders)})")
+st.subheader(f"Explanation for Multiple Edges Only (Voltage Level(s): {', '.join(selected_voltages)} | FEEDER(s): {', '.join(selected_feeders)})")
 
 def color_icon_html(color):
     return f"<span style='display:inline-block;width:18px;height:18px;background:{color};border-radius:50%;border:1px solid #222'></span>"
