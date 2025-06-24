@@ -1,0 +1,5 @@
+Cable_ID,Voltage_Level,Feeder_ID,Sub_Feeder_ID,From_Switch,To_Switch,Cable_Type,Cable_Age_Years,Length_m,Installation_Environment,Soil_Type,Humidity,Proximity_to_Water,Load_History_Avg_Load,Load_History_Peak_Load,Loading_Cycles,Overload_Events,IR_Measurement_MOhm,Tan_Delta,Partial_Discharge_Frequency,Partial_Discharge_Intensity,Thermal_History_Excursions,Num_Faults,Fault_Type,Repairs_Count,Joint_History,Corrosivity,Water_Ingress,Remarks
+33KV-SW1-SW2,33kV,,,SW1,SW2,XLPE,7,1200,Underground,Sandy,Medium,Far,60,100,150,1,500,0.001,0,0,0,0,None,0,Original,Low,No,Healthy
+22KV-SW3-SW4,22kV,,,SW3,SW4,PILC,3,800,Overhead,Clay,High,Near,50,90,100,0,400,0.002,0,0,1,1,Earth Fault,1,Repaired once,Medium,No,Monitor
+FDR1-DT001,11kV,FDR1,,,,XLPE,8,400,Underground,Loam,Medium,Near,40,80,120,2,120,0.003,1,3,1,2,Earth Fault,2,Multiple joints,High,Yes,Healthy
+FDR2-SUB1-DT005,11kV,FDR2,SUB1,,,XLPE,4,220,Underground,Rocky,Low,Far,30,50,90,0,200,0.001,0,0,0,0,None,0,Original,Low,No,
