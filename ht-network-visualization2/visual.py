@@ -19,7 +19,6 @@ for col in df.columns:
     df[col] = df[col].fillna("-")
 df['FEEDERID'] = df['FEEDERID'].astype(str)
 
-# ----- VOLTAGE LEVEL LOGIC -----
 def feeder_voltage(feederid):
     if pd.isnull(feederid) or feederid in ["-", "NULL", "nan"]:
         return "Others"
@@ -47,13 +46,11 @@ def _extract_feeder_token(feederid):
 
 df["FEEDER_ID"] = df["FEEDERID"].apply(_extract_feeder_token)
 
-# ---- VOLTAGE MULTI-SELECT ----
 voltage_levels = ["11kV", "22kV", "33kV", "Others"]
 selected_voltages = st.multiselect(
     "Select Voltage Level(s):", voltage_levels, default=voltage_levels[:1]
 )
 
-# ---- FEEDER_ID multi-select for selected voltage ----
 filtered_by_voltage = df[df["FEEDER_VOLTAGE"].isin(selected_voltages)]
 feeders_list = sorted(filtered_by_voltage["FEEDER_ID"].fillna("NULL").unique().tolist())
 if "NULL" not in feeders_list:
@@ -61,7 +58,6 @@ if "NULL" not in feeders_list:
 feeder_options = ["All"] + feeders_list
 selected_feeders = st.multiselect("Select FEEDER ID(s):", feeder_options, default=["All"])
 
-# ---- FINAL FILTER for Data ----
 if "All" in selected_feeders:
     view_df = filtered_by_voltage.copy()
 else:
@@ -70,7 +66,6 @@ else:
 view_df["SOURCE_SS"] = view_df["SOURCE_SS"].fillna("UNKNOWN").astype(str)
 view_df["DESTINATION_SS"] = view_df["DESTINATION_SS"].fillna("UNKNOWN").astype(str)
 
-# ---- EDGE LIMIT ----
 MAX_EDGES = 500
 MAX_EDGES = st.number_input(
     "Maximum number of edges to show (for performance):",
@@ -81,7 +76,6 @@ if len(view_df) > MAX_EDGES:
     st.warning(f"Network has {len(view_df)} edges! Only first {MAX_EDGES} shown for clarity.")
     view_df = view_df.head(MAX_EDGES)
 
-# ---- EDGE TYPE FILTER ----
 pair_counts = view_df.groupby(["SOURCE_SS", "DESTINATION_SS"]).size()
 multi_edge_pairs = pair_counts[pair_counts > 1].index.tolist()
 single_edge_pairs = pair_counts[pair_counts == 1].index.tolist()
@@ -107,13 +101,11 @@ def edge_filter(row):
 
 view_df = view_df[view_df.apply(edge_filter, axis=1)].copy()
 
-# ---- Find highlighted nodes: SOURCE_SS where SOURCE_SWITCH_ID == selected FEEDER_ID ----
 highlighted_nodes = set()
 if "All" not in selected_feeders and "NULL" not in selected_feeders and "SOURCE_SWITCH_ID" in view_df.columns:
     mask = view_df["SOURCE_SWITCH_ID"].isin(selected_feeders)
     highlighted_nodes = set(view_df.loc[mask, "SOURCE_SS"].unique())
 
-# ---- BUILD EDGES ----
 def random_color():
     return "#"+''.join(random.choices('0123456789ABCDEF', k=6))
 
@@ -136,7 +128,6 @@ for idx, row in view_df.iterrows():
     edge_dict.update({"src": src, "dst": dst, "is_multi": is_multi, "color": color})
     edges.append(edge_dict)
 
-# ---- BUILD NETWORKX GRAPH (highlight only matching SOURCE_SS nodes) ----
 ss_to_feederid = dict(zip(view_df["SOURCE_SS"], view_df["FEEDER_ID"]))
 G = nx.MultiDiGraph()
 for e in edges:
@@ -157,9 +148,14 @@ for e in edges:
                 size=25,
                 title=f"FEEDER_ID: {ss_to_feederid.get(node, '-')}"
             )
+    # --------- MAIN CHANGE: show REMARKS & COMMENTS on hover ---------
     edge_kwargs = dict(
         label="",
-        title=" | ".join([f"{k}: {e[k]}" for k in ['MEASUREDLENGTH','COMMENTS'] if k in e])
+        title=" | ".join([
+            f"REMARKS: {e['REMARK']}" if 'REMARK' in e else "",
+            f"COMMENTS: {e['COMMENTS']}" if 'COMMENTS' in e else "",
+            f"LENGTH: {e['MEASUREDLENGTH']}" if 'MEASUREDLENGTH' in e else ""
+        ])
     )
     if e["is_multi"]:
         edge_kwargs["color"] = e["color"]
@@ -212,7 +208,6 @@ st.subheader(f"Explanation for Multiple Edges Only (Voltage Level(s): {', '.join
 def color_icon_html(color):
     return f"<span style='display:inline-block;width:18px;height:18px;background:{color};border-radius:50%;border:1px solid #222'></span>"
 
-# ---- User-selected columns ----
 default_cols = ["Color","SOURCE_SS","DESTINATION_SS","LABELTEXT","MEASUREDLENGTH","REMARK","COMMENTS"]
 table_cols = [col for col in default_cols if col in view_df.columns]
 all_possible_cols = ["Color"] + [c for c in view_df.columns if c not in ("src","dst","is_multi","color")]
@@ -223,7 +218,6 @@ show_cols = st.multiselect(
     default=table_cols
 )
 
-# ---- Only multi-edge rows, user-selected columns ----
 multi_exp_data = []
 for e in edges:
     if e["is_multi"]:
