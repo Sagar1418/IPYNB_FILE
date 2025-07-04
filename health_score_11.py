@@ -163,7 +163,7 @@ with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
 
 # --- Health histogram for shown cables ---
 st.subheader("Cable Health Distribution (shown network only)")
-hist = alt.Chart(vis).mark_bar(color="#e31a1c").encode(
+hist = alt.Chart(vis).mark_bar(color="#047ecf").encode(
     x=alt.X("CABLE_HEALTH:Q", bin=True, title="Health (1 worst → 10 best)"),
     y=alt.Y("count()", title="Cable Count")
 )
