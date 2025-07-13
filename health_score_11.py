@@ -10,19 +10,22 @@ import json
 import tempfile
 from datetime import datetime
 from scipy.stats import mstats
+import textwrap
 
 st.set_page_config("11 kV Feeder Health (FAST)", layout="wide")
-st.title("11 kV Feeder / Cable Health — Advanced Chain View")
+st.title("11 kV Feeder / Cable Health — Chain View")
 
 uploaded = st.file_uploader("Upload **AFINAL_full.csv**", type="csv")
 if not uploaded:
     st.stop()
 
 # --- Score sharpness gamma slider at TOP ---
-gamma = st.sidebar.slider("Score sharpness γ (affects all scores)", 0.01, 3.0, 1.0, 0.1)
+# gamma = st.sidebar.slider("Score sharpness γ (affects all scores)", 0.01, 3.0, 0.5, 0.1)
+gamma = 0.45 # Default value for testing, can be changed via slider
 
 # --- Read and clean data ---
 df0 = pd.read_csv(uploaded, low_memory=False)
+df0 = df0[~df0['REMARKS'].str.upper().isin(['ABANDONED', 'DISCONNECTED'])]
 df0.columns = [c.upper() for c in df0.columns]
 if "COMMENTS" in df0.columns:
     df0["COMMENTS"] = df0["COMMENTS"].astype(str).str.replace(r"<br\s*/?>", "\n", regex=True)
@@ -45,35 +48,37 @@ df0["FEEDER_ID"] = pd.to_numeric(df0["FEEDER_ID"], errors="coerce").astype("Int6
 
 # --- Calculate health score ONCE for all cables (ALWAYS with selected gamma) ---
 weights = {
-    "CBL_FAULT_COUNT":         0.18,
-    "CBL_MAX_REPAIR_HRS":      0.08,
-    "CBL_AVG_REPAIR_HRS":      0.04,
-    "AGE":                     0.10,
-    "SWITCH_LOAD_FACTOR_MEAN": 0.08,
-    "SWITCH_Y_INST_VOLTAGE_STD": 0.08,
-    "LENGTH":                  0.05,
-    "NOOFJOINTS":              0.07,
-    "SECTIONLOSS_KW":          0.08,
-    "DESIGN_RISK":             0.15,
-    "RESISTANCE":              0.04,
-    "FEEDER_LOSS_FACTOR_MEAN": 0.05,
+    "FAULT_SWITCH_COUNT":         0.25,
+    "CBL_MAX_REPAIR_HRS":      0.16,
+    "CBL_AVG_REPAIR_HRS":      0.12,
+    "AGE":                     0.12,
+    "AGG_MEASUREDLENGTH":        0.15,
+    
+    "DESIGN_RISK":             0.10, 
+    "NO_OF_SEGMENT":           0.10,
+    
 }
 
 year = datetime.now().year
 df0["AGE"] = year - pd.to_datetime(df0["DATECREATED"], errors="coerce").dt.year.fillna(year)
 
 def design_risk(csize, ctype):
+    
     s = (str(csize) + str(ctype)).upper()
     if "PILC" in s: return 1.0
     if " AL" in s: return 0.8
     if any(x in s for x in ("XLPE","CU","COPPER")): return 0.2
     return 0.5
 
-df0["DESIGN_RISK"] = [design_risk(a, b) for a, b in zip(df0.get("CABLESIZE", ""), df0.get("CLUSTER_TYPE", ""))]
+df0["DESIGN_RISK"] = [design_risk(a, b) for a, b in zip(df0.get("CABLETYPE", ""), df0.get("CABLECONDUCTORMATERIAL", ""))]
 
 normed = pd.DataFrame(index=df0.index)
 for col in weights:
-    vals = pd.to_numeric(df0.get(col, np.nan), errors="coerce")
+    
+    if col not in df0.columns:
+        vals = pd.Series([np.nan] * len(df0), index=df0.index)
+    else:
+        vals = pd.to_numeric(df0[col], errors="coerce")
     vals_clip = mstats.winsorize(vals, limits=[0.01, 0.01])
     median = np.nanmedian(vals_clip)
     vals_filled = np.where(np.isnan(vals_clip), median, vals_clip)
@@ -82,19 +87,43 @@ for col in weights:
     if minv == maxv:
         normed[col] = 0
 
+def sigmoid(x, k=5):
+    return 1 / (1 + np.exp(-k * (x - 0.5)))
+
 risk = np.zeros(len(df0))
 for col, w in weights.items():
-    risk += w * normed[col]
+    sig = sigmoid(normed[col].fillna(0), k=5)  # You can tune 'k'
+    risk += w * sig
+
+# Normalize the final risk to [0, 1] range
 risk_scaled = (risk - risk.min()) / (risk.max() - risk.min() + 1e-8)
 risk_final = np.power(risk_scaled, gamma).clip(0, 1)
+# Identify top 3 contributing features per row
+top3_features = []
+for i in normed.index:
+    contribs = {}
+    for col, w in weights.items():
+        val = sigmoid(normed.at[i, col], k=5) if col in normed.columns else 0
+        contribs[col] = val * w
+    top = sorted(contribs.items(), key=lambda x: x[1], reverse=True)[:3]
+    top3_features.append(", ".join([f for f, _ in top]))
+
+df0["TOP3_CONTRIBUTORS"] = top3_features
+
 df0["CABLE_HEALTH"] = (1 + 9 * (1 - risk_final)).round().astype("Int16")
 
 # --- SHOW OVERALL HEALTH HISTOGRAM (this will update with gamma) ---
-hist_all = alt.Chart(df0).mark_bar(color="#047ecf").encode(
-    x=alt.X("CABLE_HEALTH:Q", bin=True, title="Health (1 worst → 10 best)"),
+# hist_all = alt.Chart(df0).mark_bar(color="#047ecf").encode(
+#     x=alt.X("CABLE_HEALTH:Q", bin=True, title="Health (1 worst → 10 best)"),
+#     y=alt.Y("count()", title="Cable Count")
+# )
+hist = alt.Chart(df0).mark_bar(color="#047ecf").encode(
+    x=alt.X("CABLE_HEALTH:O", title="Health Score (1 worst → 10 best)"),
     y=alt.Y("count()", title="Cable Count")
 )
-st.altair_chart(hist_all, use_container_width=True)
+
+st.altair_chart(hist, use_container_width=True)
+# st.altair_chart(hist_all, use_container_width=True)
 
 # --- Filtering ---
 feeders = sorted(df0["FEEDER_ID"].dropna().astype(int).unique())
@@ -142,15 +171,23 @@ for fid, chain in chains.items():
 for fid, chain in chains.items():
     for i, (s, d, row) in enumerate(chain):
         hc = int(row["CABLE_HEALTH"])
+        main_col = 'PATH'
+        main_text = str(row.get(main_col, '-'))
+        wrapped_text = "\n".join(textwrap.wrap(main_text, width=60))
+        details = f"Path: {wrapped_text}"
         cable_info = (
-            f"FROM_SWITCH: {row.get('FROM_SWITCH','-')}\n"
-            f"TO_SWITCH: {row.get('TO_SWITCH','-')}\n"
-            f"CLUSTER_TYPE: {row.get('CLUSTER_TYPE','-')}\n"
-            f"Health: {hc}/10\n"
-            f"Faults: {row.get('CBL_FAULT_COUNT','-')}\n"
-            f"Length: {row.get('LENGTH','-')}\n"
-            f"COMMENTS: {row.get('COMMENTS','-')}\n"
-        )
+        f"FROM_SWITCH: {row.get('FROM_SWITCH', '-')}\n"
+        f"TO_SWITCH: {row.get('TO_SWITCH', '-')}\n"
+        f"CLUSTER_TYPE: {row.get('CLUSTER_TYPE', '-')}\n"
+        f"Health: {hc}/10\n"
+        f"Top 3 Contributors: {row.get('TOP3_CONTRIBUTORS', '-')}\n"
+        f"Faults: {row.get('FAULT_SWITCH_COUNT', '-')}\n"
+        f"Length: {row.get('LENGTH', '-')}\n"
+        f"remarks: {row.get('REMARKS', '-')}\n"
+        f"\n{details}" if details else details
+    )
+
+
         for node in (s, d):
             G.add_node(str(node), color=color(worst[node]), size=30 + 2*(10-worst[node]),
                 title=f"{node}\nWorst cable health: {worst[node]}/10\nCables: {len(node_row[node])}")
@@ -158,42 +195,69 @@ for fid, chain in chains.items():
                    width=3 + hc/2, title=cable_info)
 
 if len(vis) > 0:
-    net = Network(height="1000px", width="100%", directed=True, bgcolor="#fff")
+    net = Network(height="2000px", width="100%", directed=True, bgcolor="#fff")
     net.from_nx(G)
-    net.set_options(json.dumps({
-        "interaction": {"hover": True, "multiselect": True},
-        "edges": {"arrows": {"to": {"enabled": True}}, "smooth": {"type": "dynamic"}},
-        "physics": {
-            "enabled": True,
-            "solver": "forceAtlas2Based",
-            "forceAtlas2Based": {"gravitationalConstant": -80},
-            "stabilization": {"enabled": True, "iterations": 150, "fit": True}
-        }
-    }))
-    net.html += """
-    <script>
-    setTimeout(function(){
-      try { if(window.network){network.setOptions({physics:false});} }catch(e){}
-    }, 3000);
-    </script>
-    """
+    net.set_options("""
+    var options = {
+    "nodes": {"size": 40},
+    "edges": {
+        "arrows": {"to": {"enabled": true, "scaleFactor": 0.7}},
+        "smooth": {"type": "dynamic"}
+    },
+    "physics": {
+        "forceAtlas2Based": {
+        "gravitationalConstant": -80,
+        "centralGravity": 0.005,
+        "springLength": 180,
+        "springConstant": 0.08
+        },
+        "maxVelocity": 200,
+        "solver": "forceAtlas2Based",
+        "timestep": 0.60,
+        "stabilization": {"enabled": true, "iterations": 20 }
+    }
+    }
+    """)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as temp_file:
+        net.save_graph(temp_file.name)
+        temp_file.seek(0)
+        html_content = temp_file.read().decode()
+
+        # Inject script to stop physics after a short delay
+        html_content += """
+        <script type="text/javascript">
+        setTimeout(function() {
+            if (window.network) {
+            network.setOptions({physics: false});
+            }
+        }, 30000);
+        </script>
+        """
+
+    # st.components.v1.html(html_content, height=810, scrolling=True)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
         net.save_graph(tmp.name); tmp.seek(0)
-        st.subheader("Cable Chain Network (selected feeder(s), static after 3 sec)")
-        st.components.v1.html(tmp.read().decode(), height=1000, scrolling=True)
+        st.subheader("Cable Chain Network Graph")
+        # st.components.v1.html(tmp.read().decode(), height=1000, scrolling=True)
+        st.components.v1.html(html_content, height=2000, scrolling=True)
 
     # Health histogram for shown cables
-    st.subheader("Cable Health Distribution (selected cables, current γ)")
-    hist = alt.Chart(vis).mark_bar(color="#047ecf").encode(
-        x=alt.X("CABLE_HEALTH:Q", bin=True, title="Health (1 worst → 10 best)"),
-        y=alt.Y("count()", title="Cable Count")
-    )
-    st.altair_chart(hist, use_container_width=True)
+    st.subheader("Cable Health Distribution (selected FEEDER_IDs)")
+    hist2 = alt.Chart(vis).mark_bar(color="#047ecf").encode(
+    x=alt.X("CABLE_HEALTH:O", title="Health Score (1 worst → 10 best)"),
+    y=alt.Y("count()", title="Cable Count")
+)
+    # hist = alt.Chart(vis).mark_bar(color="#047ecf").encode(
+    #     x=alt.X("CABLE_HEALTH:Q", bin=True, title="Health (1 worst → 10 best)"),
+    #     y=alt.Y("count()", title="Cable Count")
+    # )
+    st.altair_chart(hist2, use_container_width=True)
 
     # Show cable table
-    st.subheader("Essential Cable Table")
-    ess = ["FEEDER_ID","FROM_SWITCH","TO_SWITCH",src_col,dst_col,"LENGTH","CBL_FAULT_COUNT","CLUSTER_TYPE","CABLE_HEALTH","COMMENTS"]
-    st.dataframe(vis[ess].sort_values("CABLE_HEALTH"))
+    # st.subheader("Essential Cable Table")
+    # ess = ["FEEDER_ID","FROM_SWITCH","TO_SWITCH",src_col,dst_col,"LENGTH","CBL_FAULT_COUNT","CLUSTER_TYPE","CABLE_HEALTH","COMMENTS"]
+    # st.dataframe(vis[ess].sort_values("CABLE_HEALTH"))
 
 # --- Color map legend ---
 st.markdown("#### Health Score Color Map")
@@ -206,9 +270,11 @@ cb1 = matplotlib.colorbar.ColorbarBase(ax, cmap=cmap,
                             orientation='horizontal')
 cb1.set_label('Cable Health (1 = worst, 10 = best)')
 st.pyplot(fig)
-
-st.info(
-    "• Cable health scores and all histograms update *immediately* to your gamma value, for all cables.\n"
-    "• Select feeder(s) to see the network graph for those only.\n"
-    "• Hover or click on any cable or node in the network to view all details in the tooltip popup.\n"
-)
+# --- Show substation names ---
+st.markdown("#### Substation Names")
+substations = sorted(set(df[src_col].dropna().unique()).union(set(df[dst_col].dropna().unique())))
+if substations:
+    st.write("Substation names:", substations)
+    st.write("Total substations:", len(substations))
+else:
+    st.write("No substations found in the data.")
