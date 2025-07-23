@@ -135,6 +135,11 @@ else:
     sel_feeders = set(map(int, sel))
 
 edge_cap = st.sidebar.slider("Max cables (lowest health first)", 1000, 50000, 500, 100)
+# ── Edge‑label toggle ─────────────────────────────────────────
+show_rank = st.sidebar.checkbox(
+    "Show RANK on edges (instead of Health Score)",
+    value=False
+)
 
 # ---- FILTER ONLY AFTER health is calculated -----
 df = df0[df0["FEEDER_ID"].isin(sel_feeders)].copy()
@@ -152,7 +157,7 @@ df = df[df[src_col].notna() & df[dst_col].notna()]
 vis = df.sort_values("CABLE_HEALTH").head(edge_cap)
 chains = {}
 for fid in vis["FEEDER_ID"].unique():
-    chain = vis[vis["FEEDER_ID"]==fid].sort_values("RANK")
+    chain = vis[vis["FEEDER_ID"]==fid]
     chains[fid] = [(str(row[src_col]), str(row[dst_col]), row) for _, row in chain.iterrows()]
 
 # --- Build the network graph ---
@@ -162,37 +167,41 @@ def color(score:int)->str:
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 worst, node_row, G = {}, {}, nx.MultiDiGraph()
-for fid, chain in chains.items():
-    for s, d, row in chain:
-        hc = int(row["CABLE_HEALTH"])
-        for node in (s, d):
-            worst[node] = min(worst.get(node,10), hc)
-            node_row[node] = node_row.get(node, []) + [row]
+
 for fid, chain in chains.items():
     for i, (s, d, row) in enumerate(chain):
-        hc = int(row["CABLE_HEALTH"])
-        main_col = 'PATH'
-        main_text = str(row.get(main_col, '-'))
-        wrapped_text = "\n".join(textwrap.wrap(main_text, width=60))
-        details = f"Path: {wrapped_text}"
+        hc   = int(row["CABLE_HEALTH"])
+        rank = row.get("RANK", "")          # assume your CSV has a RANK column
+
+        # choose which label to draw
+        label_value = str(rank) if show_rank else str(hc)
+
+        # (optional) include RANK in the tooltip as well:
         cable_info = (
-        f"FROM_SWITCH: {row.get('FROM_SWITCH', '-')}\n"
-        f"TO_SWITCH: {row.get('TO_SWITCH', '-')}\n"
-        f"CLUSTER_TYPE: {row.get('CLUSTER_TYPE', '-')}\n"
-        f"Health: {hc}/10\n"
-        f"Top 3 Contributors: {row.get('TOP3_CONTRIBUTORS', '-')}\n"
-        f"Faults: {row.get('FAULT_SWITCH_COUNT', '-')}\n"
-        f"Length: {row.get('LENGTH', '-')}\n"
-        f"remarks: {row.get('REMARKS', '-')}\n"
-        f"\n{details}" if details else details
-    )
+            f"Rank: {rank}\n"
+            f"FROM_SWITCH: {row.get('FROM_SWITCH','-')}\n"
+            f"TO_SWITCH:   {row.get('TO_SWITCH','-')}\n"
+            f"Health:     {hc}/10\n"
+            f"Top 3 Contributors: {row.get('TOP3_CONTRIBUTORS','-')}\n"
+            f"Faults:     {row.get('FAULT_SWITCH_COUNT','-')}\n"
+            f"Length:     {row.get('LENGTH','-')}\n"
+            f"Remarks:    {row.get('REMARKS','-')}\n"
+            f"\nPath: {textwrap.fill(str(row.get('PATH','-')),60)}"
+        )
 
-
+        # add nodes (unchanged)
         for node in (s, d):
-            G.add_node(str(node), color=color(worst[node]), size=30 + 2*(10-worst[node]),
-                title=f"{node}\nWorst cable health: {worst[node]}/10\nCables: {len(node_row[node])}")
-        G.add_edge(str(s), str(d), label=f"{hc}", color=color(hc),
-                   width=3 + hc/2, title=cable_info)
+            worst[node]  = min(worst.get(node,10), hc)
+            node_row[node] = node_row.get(node,[]) + [row]
+
+        # add the edge with our dynamic label
+        G.add_edge(
+            str(s), str(d),
+            label = label_value,
+            color = color(hc),
+            width = 3 + hc/2,
+            title = cable_info
+        )
 
 if len(vis) > 0:
     net = Network(height="2000px", width="100%", directed=True, bgcolor="#fff")
