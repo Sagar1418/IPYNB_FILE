@@ -1,6 +1,6 @@
 ```mermaid
 %% HT-Cable Health Score Pipeline
-flowchart TD
+flowchart TB
 
 %% STAGE 1: INPUTS
 subgraph INPUTS["1. Data Ingestion & Pre-processing"]
@@ -44,7 +44,7 @@ subgraph MODELING["2. AI Model & Factor Calculation"]
     subgraph "Feature Engineering from Master Table"
         master_out2[("SWNO_MASTER_..._FINAL4.csv")]
         master_out2 --> calc_raw["Calculate 8 Other Raw Factors"]
-        calc_raw --> raw_factors["8 Raw Factors:<br/>• a_raw (Age)<br/>• c_raw (Cycles)<br/>• f_raw (Hist. Faults/km)<br/>• i_raw (1/MTBF)<br/>• l_raw (Length)<br/>• r_raw (Load Range)<br/>• s_raw (Segments)<br/>• u_raw (Recent Faults/km)"]
+        calc_raw --> raw_factors["8 Raw Factors:<br/>• a_raw (Age)<br/>• c_raw (Cycles)<br/>• f_raw (Hist. Faults/km)<br/>• i_raw (1/MTBF)<br/>• l_raw (Length)<br/>• r_raw (Load Range)<br/>• s_raw (Segments)<br/>• u_raw (Recent Faults"]
     end
 end
 
